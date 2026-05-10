@@ -1,0 +1,20 @@
+# Scraped data
+roms/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Cache files
+.cache/
+
+# Mac OS
+.DS_Store
+
