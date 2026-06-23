@@ -8,7 +8,10 @@ Usage:
     python scrape.py gb    # download Game Boy ROMs into roms/gb/
     python scrape.py cgb   # download Game Boy Color ROMs into roms/cgb/
     python scrape.py gba   # download Game Boy Advance ROMs into roms/gba/
+    python scrape.py snes  # download Super Nintendo ROMs into roms/snes/
 """
+
+from __future__ import annotations
 
 import argparse
 import io
@@ -34,13 +37,16 @@ CACHE_DIR = Path(".cache")
 
 @dataclass
 class Platform:
-    key: str           # CLI argument name (nes / gb)
+    key: str  # CLI argument name (nes / gb)
     listing_path: str  # e.g. /roms/nintendo/
-    slug_prefix: str   # e.g. nintendo-rom-
-    total_pages: int
+    slug_prefix: str  # e.g. nintendo-rom-
+    total_pages: int | None  # fixed page count, or None to auto-detect the last page
     roms_dir: Path
-    rom_ext: str       # file extension to save (.nes / .gb)
-    magic: bytes       # expected ROM magic bytes (for validation)
+    rom_ext: str  # file extension to save (.nes / .gb)
+    magic: bytes  # expected ROM magic bytes (for validation)
+    zip_exts: tuple[
+        str, ...
+    ] = ()  # extra extensions accepted inside a zip (else rom_ext)
 
 
 PLATFORMS: dict[str, Platform] = {
@@ -80,6 +86,16 @@ PLATFORMS: dict[str, Platform] = {
         rom_ext=".gba",
         magic=b"",  # GBA ROMs have no universal fixed magic; accept any non-HTML content
     ),
+    "snes": Platform(
+        key="snes",
+        listing_path="/roms/super-nintendo/",
+        slug_prefix="super-nintendo-rom-",
+        total_pages=None,  # auto-detect: stop when a page yields no new slugs
+        roms_dir=Path("roms/snes"),
+        rom_ext=".sfc",
+        magic=b"",  # SNES ROMs have no magic at offset 0; accept any non-HTML content
+        zip_exts=(".sfc", ".smc"),  # romsgames may package either; both saved as .sfc
+    ),
 }
 
 HEADERS = {
@@ -98,42 +114,85 @@ _slug_re_cache: dict[str, re.Pattern] = {}
 # ---------------------------------------------------------------------------
 
 
+def _fetch_listing_page(platform: Platform, page: int) -> str | None:
+    """Return one listing page's HTML, using the on-disk cache when present.
+
+    Returns None when the page does not exist (HTTP 404), which marks the end of
+    the listing for platforms whose page count is auto-detected.
+    """
+    cache_file = CACHE_DIR / f"{platform.key}-listing-page-{page}.html"
+    if cache_file.exists():
+        return cache_file.read_text(encoding="utf-8")
+
+    url = f"{BASE_URL}{platform.listing_path}?page={page}&sort=popularity"
+    response = requests.get(url, headers=HEADERS, timeout=30)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    html = response.text
+    cache_file.write_text(html, encoding="utf-8")
+    time.sleep(REQUEST_DELAY)
+    return html
+
+
+def _extract_slugs(
+    html: str, slug_re: re.Pattern, seen: set[str], slugs: list[str]
+) -> int:
+    """Append newly-seen slugs found in `html` to `slugs`; return how many were added."""
+    added = 0
+    soup = BeautifulSoup(html, "html.parser")
+    for a in soup.find_all("a", href=True):
+        m = slug_re.match(a["href"])
+        if m:
+            slug = m.group(1)
+            if slug not in seen:
+                seen.add(slug)
+                slugs.append(slug)
+                added += 1
+    return added
+
+
 def get_all_game_slugs(platform: Platform) -> list[str]:
     """Scrape all listing pages and return a deduplicated list of ROM slugs.
 
     Each page's HTML is cached under .cache/{key}-listing-page-{n}.html so the
     listing phase can be resumed if interrupted.
+
+    When ``platform.total_pages`` is None the last page is auto-detected: paging
+    stops as soon as a page returns HTTP 404 or yields no new slugs.
     """
     slug_re = _slug_re_cache.setdefault(
         platform.key,
         re.compile(rf"^/{re.escape(platform.slug_prefix)}(.+)/$"),
     )
     CACHE_DIR.mkdir(exist_ok=True)
-    listing_url = f"{BASE_URL}{platform.listing_path}"
     slugs: list[str] = []
     seen: set[str] = set()
 
-    for page in tqdm(range(1, platform.total_pages + 1), desc="Scraping listing pages", unit="page"):
-        cache_file = CACHE_DIR / f"{platform.key}-listing-page-{page}.html"
+    if platform.total_pages is not None:
+        for page in tqdm(
+            range(1, platform.total_pages + 1),
+            desc="Scraping listing pages",
+            unit="page",
+        ):
+            html = _fetch_listing_page(platform, page)
+            if html is None:
+                break
+            _extract_slugs(html, slug_re, seen, slugs)
+        return slugs
 
-        if cache_file.exists():
-            html = cache_file.read_text(encoding="utf-8")
-        else:
-            url = f"{listing_url}?page={page}&sort=popularity"
-            response = requests.get(url, headers=HEADERS, timeout=30)
-            response.raise_for_status()
-            html = response.text
-            cache_file.write_text(html, encoding="utf-8")
-            time.sleep(REQUEST_DELAY)
-
-        soup = BeautifulSoup(html, "html.parser")
-        for a in soup.find_all("a", href=True):
-            m = slug_re.match(a["href"])
-            if m:
-                slug = m.group(1)
-                if slug not in seen:
-                    seen.add(slug)
-                    slugs.append(slug)
+    # Unknown page count: page until a 404 or a page that adds no new slugs.
+    page = 1
+    with tqdm(desc="Scraping listing pages", unit="page") as bar:
+        while True:
+            html = _fetch_listing_page(platform, page)
+            if html is None:
+                break
+            added = _extract_slugs(html, slug_re, seen, slugs)
+            bar.update(1)
+            if added == 0:
+                break
+            page += 1
 
     return slugs
 
@@ -195,10 +254,25 @@ def get_download_url(slug: str, media_id: str, platform: Platform) -> tuple[str,
 # ---------------------------------------------------------------------------
 
 
-def download_rom(slug: str, download_url: str, download_name: str, platform: Platform) -> None:
+def _select_zip_entry(names: list[str], platform: Platform) -> str | None:
+    """Return the first zip entry whose name matches an accepted ROM extension.
+
+    Accepted extensions are ``platform.zip_exts`` when set, otherwise just
+    ``platform.rom_ext``. Returns None when no entry matches.
+    """
+    accepted = platform.zip_exts or (platform.rom_ext,)
+    for name in names:
+        if name.lower().endswith(accepted):
+            return name
+    return None
+
+
+def download_rom(
+    slug: str, download_url: str, download_name: str, platform: Platform
+) -> None:
     """Download the ROM from the signed URL and save it into the platform's roms_dir.
 
-    If the file is a zip, only the first entry matching the platform extension is
+    If the file is a zip, only the first entry matching an accepted extension is
     extracted. If the file is not a zip, it is saved directly after validation.
     """
     dest = platform.roms_dir / f"{slug}{platform.rom_ext}"
@@ -216,16 +290,14 @@ def download_rom(slug: str, download_url: str, download_name: str, platform: Pla
     if data.startswith(b"PK\x03\x04"):
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                entries = [name for name in zf.namelist() if name.lower().endswith(platform.rom_ext)]
-                if entries:
-                    dest.write_bytes(zf.read(entries[0]))
+                entry = _select_zip_entry(zf.namelist(), platform)
+                if entry is not None:
+                    dest.write_bytes(zf.read(entry))
                 # No matching entry inside the zip — silently skip
         except (zipfile.BadZipFile, zlib.error) as exc:
             print(f"\nSKIP {slug}: Corrupted zip — {exc}")
     elif platform.magic and not data.startswith(platform.magic):
-        raise ValueError(
-            f"Unexpected content for '{slug}': magic={data[:4]!r}"
-        )
+        raise ValueError(f"Unexpected content for '{slug}': magic={data[:4]!r}")
     else:
         dest.write_bytes(data)
 
@@ -240,7 +312,10 @@ def main() -> None:
     parser.add_argument(
         "platform",
         choices=list(PLATFORMS),
-        help="Platform to download: 'nes' (roms/nes/), 'gb' (roms/gb/), 'cgb' (roms/cgb/), or 'gba' (roms/gba/)",
+        help=(
+            "Platform to download: 'nes' (roms/nes/), 'gb' (roms/gb/), "
+            "'cgb' (roms/cgb/), 'gba' (roms/gba/), or 'snes' (roms/snes/)"
+        ),
     )
     args = parser.parse_args()
     platform = PLATFORMS[args.platform]
@@ -270,7 +345,11 @@ def main() -> None:
             time.sleep(5)  # signed URL is not active until ~5s after being issued
             download_rom(slug, download_url, download_name, platform)
             time.sleep(REQUEST_DELAY)  # polite delay after download
-        except (requests.exceptions.RequestException, zipfile.BadZipFile, ValueError) as exc:
+        except (
+            requests.exceptions.RequestException,
+            zipfile.BadZipFile,
+            ValueError,
+        ) as exc:
             tqdm.write(f"SKIP {slug}: {exc}")
 
 
