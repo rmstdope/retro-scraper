@@ -216,7 +216,7 @@ def rom_crc32(data: bytes, has_trainer: bool) -> str:
 # ---------------------------------------------------------------------------
 
 
-def patch_header(header: bytearray, entry: dict) -> None:
+def patch_header(header: bytearray, entry: dict) -> None:  # pylint: disable=too-many-branches
     """Apply rom_db.csv overrides to a mutable 16-byte iNES header in-place."""
     flags6 = header[6]
     flags7 = header[7]
@@ -316,7 +316,7 @@ def _u16le(data: bytes, offset: int) -> int:
     return data[offset] | (data[offset + 1] << 8)
 
 
-def _score_snes_header(data: bytes, loc: int) -> int:
+def _score_snes_header(data: bytes, loc: int) -> int:  # pylint: disable=too-many-branches
     """Heuristic confidence that a valid SNES header starts at offset `loc`.
 
     Combines the strongest signal (16-bit checksum + complement == 0xFFFF) with
@@ -332,7 +332,7 @@ def _score_snes_header(data: bytes, loc: int) -> int:
         score += 8
 
     map_byte = data[loc + _SNES_MAP_OFFSET]
-    if (map_byte & 0xEF) in _SNES_EXPECTED_MAP[loc]:
+    if map_byte & 0xEF in _SNES_EXPECTED_MAP[loc]:
         score += 4
     elif map_byte & 0x20:  # valid SNES map-mode bytes always have bit 5 set
         score += 1
@@ -380,7 +380,7 @@ def snes_map_mode_name(map_byte: int, header_off: int) -> str:
     return _SNES_LOCATION_NAMES.get(header_off, f"unknown-{map_byte:#04x}")
 
 
-def snes_chipset_name(cart_byte: int) -> str:
+def snes_chipset_name(cart_byte: int) -> str:  # pylint: disable=too-many-return-statements
     """Folder name for the SNES cartridge hardware (memory + coprocessor)."""
     low = cart_byte & 0x0F
     if low == 0x0:
@@ -409,6 +409,7 @@ def snes_chipset_name(cart_byte: int) -> str:
 
 
 def sort_nes(db: dict[str, dict]) -> None:
+    """Sort NES ROMs into mapper/submapper directories."""
     roms_dir = Path("roms/nes")
     mappers_dir = roms_dir / "mappers"
     nes_files = sorted(roms_dir.glob("*.nes"))
@@ -445,6 +446,7 @@ def sort_nes(db: dict[str, dict]) -> None:
 
 
 def sort_gb() -> None:
+    """Sort GB ROMs into MBC/CGB-mode directories."""
     roms_dir = Path("roms/gb")
     mappers_dir = roms_dir / "mappers"
     gb_files = sorted(roms_dir.glob("*.gb"))
@@ -469,6 +471,7 @@ def sort_gb() -> None:
 
 
 def sort_cgb() -> None:
+    """Sort CGB ROMs into MBC/CGB-mode directories."""
     roms_dir = Path("roms/cgb")
     mappers_dir = roms_dir / "mappers"
     cgb_files = sorted(roms_dir.glob("*.gbc"))
@@ -493,6 +496,7 @@ def sort_cgb() -> None:
 
 
 def sort_gba() -> None:
+    """Sort GBA ROMs into maker-code directories."""
     roms_dir = Path("roms/gba")
     makers_dir = roms_dir / "makers"
     gba_files = sorted(roms_dir.glob("*.gba"))
@@ -517,6 +521,7 @@ def sort_gba() -> None:
 
 
 def sort_snes() -> None:
+    """Sort SNES ROMs into mapping-mode/chipset directories."""
     roms_dir = Path("roms/snes")
     mappers_dir = roms_dir / "mappers"
     snes_files = sorted(p for ext in ("*.sfc", "*.smc") for p in roms_dir.glob(ext))
@@ -550,6 +555,7 @@ def sort_snes() -> None:
 
 
 def main() -> None:
+    """CLI entry point for ROM sorting."""
     parser = argparse.ArgumentParser(description="Sort ROMs by hardware metadata")
     parser.add_argument(
         "platform",

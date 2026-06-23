@@ -6,7 +6,8 @@ names, graceful fallback) and the zip-entry selector in scrape.py.
 """
 
 # Tests deliberately exercise module-internal helpers and layout constants.
-# pylint: disable=protected-access
+# Missing per-test docstrings and a large helper signature are expected in tests.
+# pylint: disable=protected-access,missing-function-docstring,too-many-arguments
 
 from __future__ import annotations
 
@@ -40,7 +41,9 @@ def build_rom(
         size = loc + 0x40
     data = bytearray(size)
 
-    title_bytes = title.encode("ascii").ljust(sort._SNES_TITLE_SIZE)[: sort._SNES_TITLE_SIZE]
+    title_bytes = title.encode("ascii").ljust(sort._SNES_TITLE_SIZE)[
+        : sort._SNES_TITLE_SIZE
+    ]
     start = loc + sort._SNES_TITLE_OFFSET
     data[start : start + sort._SNES_TITLE_SIZE] = title_bytes
     data[loc + sort._SNES_MAP_OFFSET] = map_byte
@@ -91,7 +94,9 @@ def test_detect_hirom_not_confused_by_lorom_region():
     # The LoROM candidate location lies within a HiROM image; the valid HiROM
     # checksum must make HiROM win.
     rom = build_rom(HIROM, size=0x10000, map_byte=0x21)
-    assert sort.detect_snes_header(rom)[0] == HIROM
+    info = sort.detect_snes_header(rom)
+    assert info is not None
+    assert info[0] == HIROM
 
 
 def test_detect_without_valid_checksum_uses_mapmode():
@@ -128,7 +133,9 @@ def test_detect_after_stripping_copier_header():
     raw = build_rom(LOROM, size=0x8000, map_byte=0x20, copier=True)
     assert sort._has_copier_header(len(raw))
     stripped = raw[sort._SNES_COPIER_HEADER_SIZE :]
-    assert sort.detect_snes_header(stripped)[0] == LOROM
+    info = sort.detect_snes_header(stripped)
+    assert info is not None
+    assert info[0] == LOROM
 
 
 # ---------------------------------------------------------------------------

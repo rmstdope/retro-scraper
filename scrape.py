@@ -36,7 +36,11 @@ CACHE_DIR = Path(".cache")
 
 
 @dataclass
+# This dataclass mirrors external source metadata for each platform.
+# pylint: disable=too-many-instance-attributes
 class Platform:
+    """Static scraping configuration for one console platform."""
+
     key: str  # CLI argument name (nes / gb)
     listing_path: str  # e.g. /roms/nintendo/
     slug_prefix: str  # e.g. nintendo-rom-
@@ -183,13 +187,13 @@ def get_all_game_slugs(platform: Platform) -> list[str]:
 
     # Unknown page count: page until a 404 or a page that adds no new slugs.
     page = 1
-    with tqdm(desc="Scraping listing pages", unit="page") as bar:
+    with tqdm(desc="Scraping listing pages", unit="page") as progress_bar:
         while True:
             html = _fetch_listing_page(platform, page)
             if html is None:
                 break
             added = _extract_slugs(html, slug_re, seen, slugs)
-            bar.update(1)
+            progress_bar.update(1)
             if added == 0:
                 break
             page += 1
@@ -267,9 +271,7 @@ def _select_zip_entry(names: list[str], platform: Platform) -> str | None:
     return None
 
 
-def download_rom(
-    slug: str, download_url: str, download_name: str, platform: Platform
-) -> None:
+def download_rom(slug: str, download_url: str, platform: Platform) -> None:
     """Download the ROM from the signed URL and save it into the platform's roms_dir.
 
     If the file is a zip, only the first entry matching an accepted extension is
@@ -308,6 +310,7 @@ def download_rom(
 
 
 def main() -> None:
+    """CLI entry point for ROM scraping."""
     parser = argparse.ArgumentParser(description="Download ROMs from romsgames.net")
     parser.add_argument(
         "platform",
@@ -341,9 +344,9 @@ def main() -> None:
 
         try:
             media_id = get_media_id(slug, platform)
-            download_url, download_name = get_download_url(slug, media_id, platform)
+            download_url, _download_name = get_download_url(slug, media_id, platform)
             time.sleep(5)  # signed URL is not active until ~5s after being issued
-            download_rom(slug, download_url, download_name, platform)
+            download_rom(slug, download_url, platform)
             time.sleep(REQUEST_DELAY)  # polite delay after download
         except (
             requests.exceptions.RequestException,
